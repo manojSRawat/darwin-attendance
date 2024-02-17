@@ -23,6 +23,10 @@ const puppeteer = require('puppeteer');
                 await approveClockIn(browser, page);
             }
 
+            if (credentials.approveLeaves) {
+                await approveLeaves(browser, page);
+            }
+
             await doLogOut(page);
         }
     } catch (e) {
@@ -177,17 +181,51 @@ async function approveAttendance(browser, page) {
         await  sleep(1000);
 
         await page.evaluate(() => {
-            document.querySelector(".bulk-check").click();
+            document.querySelector(".bulk-select-cell > .select-all").click();
         }); 
 
         await page.evaluate(() => {
-            document.querySelector(".open_filter[data-action='Approve']").click();
+            document.querySelector(".action-button[data-action='approve_request']").click();
         }); 
 
         await  sleep(2000);
 
         await page.evaluate(() => {
-            document.querySelector(".sidebar-form .sidebar-actions .request-action .btn").click();
+            document.querySelector(".sidebar-form >  .sidebar-actions > div > button").click();
+        });
+
+        await  sleep(10000);
+    } catch(err) {
+        console.log(err);
+    }
+}
+
+async function approveLeaves(browser, page) {
+    const url = `${config.baseUrl}/tasksApi/GetTasks`;
+    try {
+        await navigateToPage(page, url, 1000);
+        const leaveRequest = await page.$('#leave_task');
+
+        if (!leaveRequest) {
+            return;
+        }
+
+        await leaveRequest.evaluate(b => b.click());
+
+        await  sleep(1000);
+
+        await page.evaluate(() => {
+            document.querySelector(".bulk-select-cell > .select-all").click();
+        });
+
+        await page.evaluate(() => {
+            document.querySelector(".action-button[data-action='approve_request']").click();
+        });
+
+        await  sleep(2000);
+
+        await page.evaluate(() => {
+            document.querySelector(".sidebar-form >  .sidebar-actions > div > button").click();
         });
 
         await  sleep(10000);

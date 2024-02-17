@@ -5,7 +5,8 @@ module.exports = {
         {
             email: 'someemail@gmail.com',
             password: 'some_password',
-            markApproveAttendance: true
+            markApproveAttendance: true,
+            approveLeaves: false
         }
     ]
 };

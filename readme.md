@@ -37,3 +37,14 @@ Add URL and credentails in config.js
     ]
 }
 ```
+
+# Cron setup
+On linux and mac you can type following command to setup a cron
+```bash
+crontab -e
+```
+add the following expression this will run the cron at 10:00 on every day-of-week from Tuesday through Saturday.
+
+```text
+0 10 * * 2-6 node /path/darwin_attendance/index.js >> /darwin_attendance/cron.log
+```
