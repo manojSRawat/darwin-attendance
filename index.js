@@ -45,6 +45,7 @@ async function doSignOff(browser, page) {
         });
 
         if (isSignOffExist) {
+            console.log("Doing signoffs");
             let maxSignOff = 10;
             let attribute = await getSignOffAttribute(page);
             await sleep(2000);
@@ -72,6 +73,10 @@ async function getSignOffAttribute(page) {
             attr = document.querySelector('.policies_sign_off .btn.ripple').parentElement.getAttribute('resource');
             if (attr) {
                 document.querySelector(".policies_sign_off .btn.ripple").click();
+            }
+            let isConfirmation = document.querySelector('.isAgreeCheckbox');
+            if (isConfirmation) {
+                isConfirmation.click();
             }
         }
         return attr;
