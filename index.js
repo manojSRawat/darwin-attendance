@@ -131,6 +131,7 @@ async function markAttandance(browser, page) {
 
         const submitButton = await page.$('#add_request_btn');
         await submitButton.evaluate(b => b.click());
+        await sleep(2000);
     } catch(err) {
         console.log('error while marking attendance');
         console.log(err);
