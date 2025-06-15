@@ -1,5 +1,7 @@
-const config = require('./config');
-const puppeteer = require('puppeteer');
+import config from './config.js';
+import puppeteer from 'puppeteer';
+import fetch from 'node-fetch';
+
 
 (async () => {
     console.log('===================>>> Running on', new Date());
@@ -9,9 +11,12 @@ const puppeteer = require('puppeteer');
     });
 
     try {
-        for (credentials of config.credentials) {
+        for (let credentials of config.credentials) {
             console.log(credentials);
             let page = await doLogin(browser, credentials);
+            await sleep(1000);
+
+            await checkForOtpPage(browser, page, credentials);
             await sleep(1000);
 
             await doSignOff(browser, page);
@@ -36,6 +41,36 @@ const puppeteer = require('puppeteer');
         console.log('===================>>> Completed on', new Date());
     }
 })();
+
+async function checkForOtpPage(browser, page, credentials) {
+    try {
+        const isOtpPage = await page.evaluate(() => {
+            return document.querySelector('#otp') !== null;
+        });
+
+        if (!isOtpPage) {
+            return;
+        }
+        await sleep(5000);
+
+        const response = await fetch(`${config.otpBaseUrl}/v1/otp/${credentials.id}/message`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status} ${response.body}`);
+        }
+        console.log('Fetching OTP from external service...');
+        const data = await response.json();
+        if (data && data.data) {
+            console.log('OTP received:', data.data);
+            await page.$eval('#otp', (el, otp) => el.value = otp, data.data);
+            
+            await page.click('input[type="submit"][value="SUBMIT"]');
+        } else {
+            console.error('No OTP found in the response.');
+        }
+    } catch (error) {
+        console.error('Error checking for OTP page:', error);
+    }
+}
 
 async function doSignOff(browser, page) {
     try {

@@ -28,6 +28,7 @@ Add URL and credentails in config.js
 {
     isProduction: true,
     baseUrl: 'https://company_name.darwinbox.in',
+    otpBaseUrl: 'https://otp-server',
     credentials: [
         {
             email: 'someemail@gmail.com',
@@ -37,6 +38,9 @@ Add URL and credentails in config.js
     ]
 }
 ```
+
+# OTP
+otpBaseUrl is requried if OTP is enabled
 
 # Cron setup
 On linux and mac you can type following command to setup a cron

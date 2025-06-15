@@ -8,7 +8,9 @@
   },
   "author": "Manoj Singh Rawat",
   "license": "ISC",
+  "type": "module",
   "dependencies": {
-    "puppeteer": "^15.0.0"
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.10.1"
   }
 }
