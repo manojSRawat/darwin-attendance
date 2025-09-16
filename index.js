@@ -16,20 +16,20 @@ import fetch from 'node-fetch';
             let page = await doLogin(browser, credentials);
             await sleep(1000);
 
-            await checkForOtpPage(browser, page, credentials);
+            await checkForOtpPage(page, credentials);
             await sleep(1000);
 
-            await doSignOff(browser, page);
-
-            await markAttandance(browser, page);
+            await doSignOff(page);
+            
+            await markAttandance(page);
 
             if (credentials.markApproveAttendance) {
-                await approveAttendance(browser, page);
-                await approveClockIn(browser, page);
+                await approveAttendance(page);
+                await approveClockIn(page);
             }
 
             if (credentials.approveLeaves) {
-                await approveLeaves(browser, page);
+                await approveLeaves(page);
             }
 
             await doLogOut(page);
@@ -42,8 +42,9 @@ import fetch from 'node-fetch';
     }
 })();
 
-async function checkForOtpPage(browser, page, credentials) {
+async function checkForOtpPage(page, credentials) {
     try {
+        await sleep(5000);
         const isOtpPage = await page.evaluate(() => {
             return document.querySelector('#otp') !== null;
         });
@@ -67,13 +68,16 @@ async function checkForOtpPage(browser, page, credentials) {
         } else {
             console.error('No OTP found in the response.');
         }
+        await page.waitForFunction('document.readyState === "complete"');
     } catch (error) {
         console.error('Error checking for OTP page:', error);
     }
 }
 
-async function doSignOff(browser, page) {
+async function doSignOff(page) {
     try {
+        console.log("Doing signoffs");
+        await sleep(2000);
         let isSignOffExist = await page.evaluate(() => {
             let el = document.querySelector(".policies_sign_off")
             return !!el
@@ -145,35 +149,49 @@ async function doLogOut(page) {
     console.log('Logout done');
 }
 
-async function markAttandance(browser, page) {
-    const url = `${config.baseUrl}/attendance#`;
+async function markAttandance(page) {
+    const url = `${config.baseUrl}/ms/time/390335/attendance`;
 
     try {
         console.log('marking attendance');
         await page.goto(url);
         await page.waitForFunction('document.readyState === "complete"');
 
+        await sleep(8000);
+
+        await page.click('ui-dropdown-list ui-dropdown div > button');
+
         await sleep(1000);
 
-        const button = await page.$('#attendance_request');
-        await button.evaluate(b => b.click());
-        await sleep(2000);
+        await page.click('ui-dropdown > div > div > div.db-dropdown-menu.floating-content > ul > li:nth-child(3) > a');
 
-        await page.select('#AttendanceRequestForm_request_type', '2');
-        await page.select('#reasons_value', 'a62df79c2a2839');
-        await page.select('#AttendanceRequestForm_clock_out_hrs', '20');
-        await page.$eval('#AttendanceRequestForm_message', el => el.value = '.');
+        await sleep(3000);
 
-        const submitButton = await page.$('#add_request_btn');
-        await submitButton.evaluate(b => b.click());
-        await sleep(2000);
+        const dropdownHandle = await page.$('dbx-dropdown');
+        const shadowRootHandle = await dropdownHandle.evaluateHandle(el => el.shadowRoot);
+
+        const choicesInnerHandle = await shadowRootHandle.$('.choices__inner');
+        await choicesInnerHandle.click();
+
+        await sleep(500);
+
+        const firstOptionHandle = await shadowRootHandle.$('.choices__item--choice');
+        if (firstOptionHandle) {
+            await firstOptionHandle.click();
+        } else {
+            console.error('No dropdown options found');
+        }
+
+        await page.type('dbx-textinput >>> textarea', '.');
+
+        await page.click('div.db-modal-footer.ng-star-inserted > div > button.db-btn.style-primary');
     } catch(err) {
         console.log('error while marking attendance');
         console.log(err);
     }
 }
 
-async function approveClockIn(browser, page) {
+async function approveClockIn(page) {
     const url = `${config.baseUrl}/tasksApi/GetTasks`;
     try {
         await navigateToPage(page, url, 1000);
@@ -207,7 +225,7 @@ async function approveClockIn(browser, page) {
     }
 }
 
-async function approveAttendance(browser, page) {
+async function approveAttendance(page) {
     const url = `${config.baseUrl}/tasksApi/GetTasks`;
     try {
         await navigateToPage(page, url, 1000);
@@ -241,7 +259,7 @@ async function approveAttendance(browser, page) {
     }
 }
 
-async function approveLeaves(browser, page) {
+async function approveLeaves(page) {
     const url = `${config.baseUrl}/tasksApi/GetTasks`;
     try {
         await navigateToPage(page, url, 1000);
