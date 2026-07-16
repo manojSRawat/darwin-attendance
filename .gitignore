@@ -1,2 +1,4 @@
 node_modules/
 cron.log
+.env
+local.js

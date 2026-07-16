@@ -2,6 +2,10 @@ import config from './config.js';
 import puppeteer from 'puppeteer';
 import fetch from 'node-fetch';
 
+const DEFAULT_TIMEOUT = 15000;
+const OTP_POLL_INTERVAL_MS = 1000;
+const OTP_TIMEOUT_MS = 30000;
+
 
 (async () => {
     console.log('===================>>> Running on', new Date());
@@ -9,30 +13,26 @@ import fetch from 'node-fetch';
         args: ['--no-sandbox'],
         headless: config.isProduction,
     });
+    
 
     try {
-        for (let credentials of config.credentials) {
-            console.log(credentials);
-            let page = await doLogin(browser, credentials);
-            await sleep(1000);
+        for (const credentials of config.credentials) {
+            let page;
+            try {
+                page = await doLogin(browser, credentials);
 
-            await checkForOtpPage(page, credentials);
-            await sleep(1000);
-
-            await doSignOff(page);
-            
-            await markAttandance(page);
-
-            if (credentials.markApproveAttendance) {
-                await approveAttendance(page);
-                await approveClockIn(page);
+                await checkForOtpPage(page, credentials);
+                await doSignOff(page);
+                await markAttandance(page);
+                await processApprovalQueue(page, credentials);
+                await doLogOut(page);
+            } catch (error) {
+                console.error(`Error while processing user ${credentials.id || credentials.email}:`, error);
+            } finally {
+                if (page && !page.isClosed()) {
+                    await page.close();
+                }
             }
-
-            if (credentials.approveLeaves) {
-                await approveLeaves(page);
-            }
-
-            await doLogOut(page);
         }
     } catch (e) {
         console.log(e);
@@ -44,31 +44,36 @@ import fetch from 'node-fetch';
 
 async function checkForOtpPage(page, credentials) {
     try {
-        await sleep(5000);
-        const isOtpPage = await page.evaluate(() => {
-            return document.querySelector('#otp') !== null;
-        });
-
-        if (!isOtpPage) {
+        const otpInput = await page.waitForSelector('#otp', { timeout: 4000 }).catch(() => null);
+        if (!otpInput) {
             return;
         }
-        await sleep(5000);
 
-        const response = await fetch(`${config.otpBaseUrl}/v1/otp/${credentials.id}/message`);
-        if (!response.ok) {
-            throw new Error(`HTTP error! Status: ${response.status} ${response.body}`);
-        }
         console.log('Fetching OTP from external service...');
-        const data = await response.json();
-        if (data && data.data) {
-            console.log('OTP received:', data.data);
-            await page.$eval('#otp', (el, otp) => el.value = otp, data.data);
-            
-            await page.click('input[type="submit"][value="SUBMIT"]');
-        } else {
+        const otp = await fetchOtpWithRetry(credentials.id, OTP_TIMEOUT_MS, OTP_POLL_INTERVAL_MS);
+
+        if (!otp) {
             console.error('No OTP found in the response.');
+            return;
         }
-        await page.waitForFunction('document.readyState === "complete"');
+
+        console.log('OTP received:', otp);
+        await page.$eval(
+            '#otp',
+            (el, value) => {
+                el.value = value;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            },
+            otp
+        );
+
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: DEFAULT_TIMEOUT }).catch(() => null),
+            page.click('input[type="submit"][value="SUBMIT"]'),
+        ]);
+
+        await waitForNetworkIdleSafe(page);
     } catch (error) {
         console.error('Error checking for OTP page:', error);
     }
@@ -76,27 +81,20 @@ async function checkForOtpPage(page, credentials) {
 
 async function doSignOff(page) {
     try {
-        console.log("Doing signoffs");
-        await sleep(2000);
-        let isSignOffExist = await page.evaluate(() => {
-            let el = document.querySelector(".policies_sign_off")
-            return !!el
-        });
+        console.log('Doing signoffs');
+        const isSignOffExist = await page.$('.policies_sign_off');
 
         if (isSignOffExist) {
-            console.log("Doing signoffs");
             let maxSignOff = 10;
             let attribute = await getSignOffAttribute(page);
-            await sleep(2000);
             while (attribute && maxSignOff--) {
                 try {
-                    await page.click('#'+attribute);
+                    await page.waitForSelector(`#${attribute}`, { timeout: 3000 });
+                    await page.click(`#${attribute}`);
                 } catch (error) {
-                    console.log("The element didn't appear.")
+                    console.log("The element didn't appear.");
                 }
-                await sleep(2000);
                 attribute = await getSignOffAttribute(page);
-                await sleep(2000);
             }
         }
     } catch(err) {
@@ -124,28 +122,33 @@ async function getSignOffAttribute(page) {
 
 async function doLogin(browser, credentials) {
     const page = await browser.newPage();
+    page.setDefaultTimeout(DEFAULT_TIMEOUT);
+    await page.setViewport({ width: 1280, height: 800 });
+    await setupPagePerformance(page);
 
     const loginPageUrl = `${config.baseUrl}/user/login`;
 
-
-    await page.goto(loginPageUrl);
-
-    await page.waitForFunction('document.readyState === "complete"');
+    await page.goto(loginPageUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#UserLogin_username', { visible: true });
+    await page.waitForSelector('#UserLogin_password', { visible: true });
 
     await page.$eval('#UserLogin_username', (el, credentials) => el.value = credentials.email, credentials);
     await page.$eval('#UserLogin_password', (el, credentials) => el.value = credentials.password, credentials);
 
-    await page.click('#login-submit');
+    await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: DEFAULT_TIMEOUT }).catch(() => null),
+        page.click('#login-submit'),
+    ]);
 
-    await page.waitForFunction('document.readyState === "complete"');
+    await waitForNetworkIdleSafe(page);
 
     return page;
 }
 
 async function doLogOut(page) {
     const url = `${config.baseUrl}/user/logout`;
-    await page.goto(url);
-    await page.waitForFunction('document.readyState === "complete"');
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await waitForNetworkIdleSafe(page);
     console.log('Logout done');
 }
 
@@ -154,16 +157,23 @@ async function markAttandance(page) {
 
     try {
         console.log('marking attendance');
-        await page.goto(url);
-        await page.waitForFunction('document.readyState === "complete"');
-
-        await sleep(8000);
-
+        await navigateToPage(page, url);
+        await page.waitForSelector('dbx-ds-button-wrapper[amplify-path="time-request-btn"]', { visible: true });
         await page.click('dbx-ds-button-wrapper[amplify-path="time-request-btn"]');
 
-        await sleep(5000);
+        await page.waitForFunction(() => {
+            const btn = document.querySelector('dbx-ds-button');
+            const shadow1 = btn?.shadowRoot;
+            const menu = shadow1?.querySelector('dbx-ds-menu');
+            const shadow2 = menu?.shadowRoot;
+            const hoverPanel = shadow2?.querySelector('dbx-ds-hover-panel');
+            const menu2 = hoverPanel?.querySelector('dbx-ds-menu');
+            const shadow3 = menu2?.shadowRoot;
+            return !!shadow3?.querySelector('[amplify-path="_amp_ui_list_dropdownitem_requestAttendance_"]');
+        }, { timeout: DEFAULT_TIMEOUT });
 
-        await page.evaluate(() => {
+
+        await page.evaluate(() => {            
             const btn = document.querySelector('dbx-ds-button');
             const shadow1 = btn?.shadowRoot;
 
@@ -185,7 +195,11 @@ async function markAttandance(page) {
             }
         });
 
-        await sleep(3000);
+        await page.waitForFunction(() => {
+            return !!document.querySelector('db-select[formcontrolname="reason"][amplify-path="requestForm.reason"]');
+        }, { timeout: DEFAULT_TIMEOUT });
+
+        await sleep(500);
 
         await page.evaluate(() => {
             const dbSelect = document.querySelector('db-select[formcontrolname="reason"][amplify-path="requestForm.reason"]');
@@ -213,7 +227,15 @@ async function markAttandance(page) {
             mainWrapper.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         });
 
-        await sleep(500);
+        await page.waitForFunction(() => {
+            const modal = document.querySelector(
+                'body > app-root > app-app-main > dbx-ds-layout-wrapper > dbx-ds-layout > div > div > app-app-home > app-time-home > app-request-home > dbx-ds-modal-wrapper > dbx-ds-modal'
+            );
+            const panel = modal?.shadowRoot?.querySelector('div.tooltip-container > dbx-dropdown-panel');
+            const scrollWrapper = panel?.shadowRoot?.querySelector('div.panel-wrapper > .main-wrapper > .scroll-wrapper');
+            const firstItem = scrollWrapper?.querySelector('dbx-dropdown-simple-item');
+            return !!firstItem;
+        }, { timeout: DEFAULT_TIMEOUT });
 
         await page.evaluate(() => {
             const modal = document.querySelector(
@@ -261,6 +283,15 @@ async function markAttandance(page) {
             textArea.dispatchEvent(new Event('change', { bubbles: true }));
         });
 
+        await page.waitForFunction(() => {
+            const modal = document.querySelector(
+                'body > app-root > app-app-main > dbx-ds-layout-wrapper > dbx-ds-layout > div > div > app-app-home > app-time-home > app-request-home > dbx-ds-modal-wrapper > dbx-ds-modal'
+            );
+            const buttonWrapper = modal?.shadowRoot?.querySelector('div.modal.is-open.is-right.modal-regular > div.footer > div > dbx-ds-button:nth-child(2)');
+            const button = buttonWrapper?.shadowRoot?.querySelector('button');
+            return !!button;
+        }, { timeout: DEFAULT_TIMEOUT });
+
         await page.evaluate(() => {
             const modal = document.querySelector(
                 "body > app-root > app-app-main > dbx-ds-layout-wrapper > dbx-ds-layout > div > div > app-app-home > app-time-home > app-request-home > dbx-ds-modal-wrapper > dbx-ds-modal"
@@ -279,123 +310,128 @@ async function markAttandance(page) {
             button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
             button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         });
+
+        await waitForNetworkIdleSafe(page);
     } catch(err) {
         console.log('error while marking attendance');
         console.log(err);
     }
 }
 
-async function approveClockIn(page) {
+async function processApprovalQueue(page, credentials) {
+    if (!credentials.markApproveAttendance && !credentials.approveLeaves) {
+        return;
+    }
+
     const url = `${config.baseUrl}/tasksApi/GetTasks`;
-    try {
-        await navigateToPage(page, url, 1000);
-        const attendanceRequest = await page.$('#attendance');
+    await navigateToPage(page, url);
 
-        if (!attendanceRequest) {
-            return;
-        }
-        
-        await attendanceRequest.evaluate(b => b.click());
-        
-        await  sleep(1000);
-
-        await page.evaluate(() => {
-            document.querySelector(".bulk-check").click();
-        }); 
-
-        await page.evaluate(() => {
-            document.querySelector(".open_filter[data-action='Approve']").click();
-        }); 
-
-        await  sleep(2000);
-
-        await page.evaluate(() => {
-            document.querySelector(".sidebar-form .sidebar-actions .request-action .btn").click();
+    if (credentials.markApproveAttendance) {
+        console.log('Processing approval queue for attendance');
+        await approveTaskType(page, {
+            tabSelector: '#attendance_request',
+            selectAllSelector: '.bulk-select-cell > .select-all',
+            actionSelector: ".action-button[data-action='approve_request']",
+            submitSelector: '.sidebar-form >  .sidebar-actions > div > button',
         });
 
-        await  sleep(10000);
-    } catch(err) {
+        await approveTaskType(page, {
+            tabSelector: '#attendance',
+            selectAllSelector: '.bulk-check',
+            actionSelector: ".open_filter[data-action='Approve']",
+            submitSelector: '.sidebar-form .sidebar-actions .request-action .btn',
+        });
+    }
+
+    if (credentials.approveLeaves) {
+        await approveTaskType(page, {
+            tabSelector: '#leave_task',
+            selectAllSelector: '.bulk-select-cell > .select-all',
+            actionSelector: ".action-button[data-action='approve_request']",
+            submitSelector: '.sidebar-form >  .sidebar-actions > div > button',
+        });
+    }
+}
+
+async function approveTaskType(page, { tabSelector, selectAllSelector, actionSelector, submitSelector }) {
+    try {
+        const tab = await page.$(tabSelector);
+        if (!tab) {
+            return;
+        }
+
+        await tab.evaluate((el) => el.click());
+
+        await clickWhenReady(page, selectAllSelector);
+        await clickWhenReady(page, actionSelector);
+        await clickWhenReady(page, submitSelector);
+        await waitForNetworkIdleSafe(page);
+    } catch (err) {
         console.log(err);
     }
 }
 
-async function approveAttendance(page) {
-    const url = `${config.baseUrl}/tasksApi/GetTasks`;
-    try {
-        await navigateToPage(page, url, 1000);
-        const attendanceRequest = await page.$('#attendance_request');
-
-        if (!attendanceRequest) {
-            return;
-        }
-        
-        await attendanceRequest.evaluate(b => b.click());
-        
-        await  sleep(1000);
-
-        await page.evaluate(() => {
-            document.querySelector(".bulk-select-cell > .select-all").click();
-        }); 
-
-        await page.evaluate(() => {
-            document.querySelector(".action-button[data-action='approve_request']").click();
-        }); 
-
-        await  sleep(2000);
-
-        await page.evaluate(() => {
-            document.querySelector(".sidebar-form >  .sidebar-actions > div > button").click();
-        });
-
-        await  sleep(10000);
-    } catch(err) {
-        console.log(err);
-    }
+async function navigateToPage(page, url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await waitForNetworkIdleSafe(page);
 }
 
-async function approveLeaves(page) {
-    const url = `${config.baseUrl}/tasksApi/GetTasks`;
-    try {
-        await navigateToPage(page, url, 1000);
-        const leaveRequest = await page.$('#leave_task');
+async function clickWhenReady(page, selector) {
+    await page.waitForSelector(selector, { visible: true, timeout: DEFAULT_TIMEOUT });
+    await page.click(selector);
+}
 
-        if (!leaveRequest) {
-            return;
+async function waitForNetworkIdleSafe(page) {
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => null);
+}
+
+async function fetchOtpWithRetry(userId, timeoutMs, intervalMs) {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 3000);
+            const response = await fetch(`${config.otpBaseUrl}/v1/otp/${userId}/message`, {
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.data) {
+                    return data.data;
+                }
+            }
+        } catch (error) {
+            // Retry until timeout.
         }
 
-        await leaveRequest.evaluate(b => b.click());
-
-        await  sleep(1000);
-
-        await page.evaluate(() => {
-            document.querySelector(".bulk-select-cell > .select-all").click();
-        });
-
-        await page.evaluate(() => {
-            document.querySelector(".action-button[data-action='approve_request']").click();
-        });
-
-        await  sleep(2000);
-
-        await page.evaluate(() => {
-            document.querySelector(".sidebar-form >  .sidebar-actions > div > button").click();
-        });
-
-        await  sleep(10000);
-    } catch(err) {
-        console.log(err);
+        await sleep(intervalMs);
     }
+
+    return null;
 }
 
-async function navigateToPage(page, url, sleepTime) {
-    await page.goto(url);
-    await page.waitForFunction('document.readyState === "complete"');
+async function setupPagePerformance(page) {
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+        const resourceType = request.resourceType();
+        const url = request.url();
+        const shouldBlock =
+            resourceType === 'image' ||
+            resourceType === 'font' ||
+            resourceType === 'media' ||
+            /google-analytics|doubleclick|facebook|clarity|hotjar/i.test(url);
 
-    if (sleepTime) {
-        await  sleep(sleepTime);
-    }
+        if (shouldBlock) {
+            request.abort();
+            return;
+        }
+
+        request.continue();
+    });
 }
-
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
